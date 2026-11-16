@@ -9,7 +9,7 @@ const fmt = value => Number.isFinite(value) ? value.toFixed(3) : '—';
 const response = (b,t,p) => b[0]*t + b[1]*t*t + b[2]*p + b[3]*p*p + b[4]*t*p;
 const change = (b,t,p,dt,dp) => response(b,t+dt,p+dp) - response(b,t,p);
 let fields = new Map(), selected, bounds, view, drag;
-const DATA_PATH = './data/kien_giang_field_seasons.geojson';
+const DATA_PATH = './data/Rice_Yield_Demo.geojson';
 
 function loadDataset(data, label, demo = false) {
   if (data.type !== 'FeatureCollection' || !Array.isArray(data.features)) throw Error('Choose a GeoJSON FeatureCollection.');
