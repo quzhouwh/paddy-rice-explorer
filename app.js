@@ -1,6 +1,15 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const canvas = $('map'), ctx = canvas.getContext('2d');
+const map = L.map('map', {zoomControl: false, preferCanvas: true})
+  .setView([9.9, 105.1], 10);
+const TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+L.tileLayer(TILE_URL, {
+  maxZoom: 22,
+  maxNativeZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+}).addTo(map);
+const fieldLayer = L.layerGroup().addTo(map);
+const outlines = new Map();
 const seasons = ['spring','autumn','winter'];
 const required = ['field_id','year','season','yield_mean','yield_std','temp_c','precip',
   ...Array.from({length:5}, (_, i) => 'coef_' + (i + 1))];
@@ -8,7 +17,7 @@ const number = value => (value === null || value === undefined || value === '' ?
 const fmt = value => Number.isFinite(value) ? value.toFixed(3) : '—';
 const response = (b,t,p) => b[0]*t + b[1]*t*t + b[2]*p + b[3]*p*p + b[4]*t*p;
 const change = (b,t,p,dt,dp) => response(b,t+dt,p+dp) - response(b,t,p);
-let fields = new Map(), selected, bounds, view, drag;
+let fields = new Map(), selected, bounds;
 const DATA_PATH = './data/Rice_Yield_Demo.geojson';
 
 function loadDataset(data, label, demo = false) {
@@ -51,70 +60,49 @@ function loadDataset(data, label, demo = false) {
   selected=ids[0];
   $('status').textContent=label + ' · ' + ids.length.toLocaleString() + ' fields';
   $('status').style.fontWeight=demo?'650':'400';
+  drawFields();
   fit();
   renderChart();
 }
 
-function size(){return [canvas.clientWidth,canvas.clientHeight];}
 function fit(){
   if(!bounds) return;
-  const [w,h]=size(), [a,b,c,d]=bounds;
-  const aspect=Math.cos((b+d)*Math.PI/360);
-  view={x:(a+c)/2,y:(b+d)/2,aspect,s:Math.min((w*.87)/Math.max((c-a)*aspect,1e-6),(h*.87)/Math.max(d-b,1e-6))};
-  draw();
+  const [west, south, east, north] = bounds;
+  map.fitBounds([[south, west], [north, east]], {padding: [24, 24], maxZoom: 19});
 }
-function zoom(f,x,y){
-  if(!view) return;
-  const [w,h]=size();
-  x=x??w/2; y=y??h/2;
-  view.x+=(x-w/2)/(view.s*view.aspect)*(1-1/f);
-  view.y-=(y-h/2)/view.s*(1-1/f);
-  view.s*=f;draw();
+
+function fieldStyle(highlight){
+  return {
+    color: highlight ? '#794317' : '#408268',
+    weight: highlight ? 2.5 : 1.2,
+    fillColor: highlight ? '#f0ab50' : '#69a787',
+    fillOpacity: highlight ? 0.72 : 0.53,
+  };
 }
-function draw(pick){
-  if(!view) return;
-  const [w,h]=size(), {s,x,y,aspect}=view;
-  const sx=(u)=>w/2+(u-x)*s*aspect, sy=(v)=>h/2+(y-v)*s;
-  if(!pick){
-    const ratio=window.devicePixelRatio||1;
-    canvas.width=Math.max(1,Math.round(w*ratio));
-    canvas.height=Math.max(1,Math.round(h*ratio));
-    ctx.setTransform(ratio,0,0,ratio,0,0);
-    ctx.clearRect(0,0,w,h);
-    ctx.strokeStyle='#d9e6dd';ctx.beginPath();
-    for(let i=0;i<w;i+=40){ctx.moveTo(i,0);ctx.lineTo(i,h);}
-    for(let i=0;i<h;i+=40){ctx.moveTo(0,i);ctx.lineTo(w,i);}
-    ctx.stroke();
+
+function drawFields(){
+  fieldLayer.clearLayers();
+  outlines.clear();
+  for(const [id, field] of fields){
+    const latLngs = field.polygons.map(polygon =>
+      polygon.map(ring => ring.map(([lng, lat]) => [lat, lng]))
+    );
+    const outline = L.polygon(latLngs, fieldStyle(id === selected)).addTo(fieldLayer);
+    outline.on('click', () => setField(id));
+    outlines.set(id, outline);
   }
-  function paths(id, highlight){
-    const item=fields.get(id), [left,bottom,right,top]=item.extent;
-    if(sx(right)<0||sx(left)>w||sy(bottom)<0||sy(top)>h) return false;
-    if(pick&&(pick[0]<sx(left)-4||pick[0]>sx(right)+4||pick[1]<sy(top)-4||pick[1]>sy(bottom)+4)) return false;
-    const path=new Path2D();
-    if(sx(right)-sx(left)<4&&sy(bottom)-sy(top)<4){
-      path.arc(sx((left+right)/2),sy((bottom+top)/2),highlight?5:3,0,2*Math.PI);
-    }else{
-      for(const polygon of item.polygons) for(const ring of polygon){
-        ring.forEach(([u,v],i)=>i?path.lineTo(sx(u),sy(v)):path.moveTo(sx(u),sy(v)));
-        path.closePath();
-      }
-    }
-    if(pick){
-      ctx.save();ctx.setTransform(1,0,0,1,0,0);
-      const hit=ctx.isPointInPath(path,pick[0],pick[1],'evenodd');ctx.restore();return hit;
-    }
-    ctx.fillStyle=highlight?'#e9aa53':'#7eaf96';ctx.strokeStyle=highlight?'#794317':'#408268';
-    ctx.lineWidth=highlight?2:1;ctx.fill(path,'evenodd');ctx.stroke(path);
-    return false;
-  }
-  let hit;
-  for(const id of fields.keys()) if(id!==selected&&paths(id,false)) hit=id;
-  return selected&&paths(selected,true)?selected:hit;
+  outlines.get(selected)?.bringToFront();
 }
 
 function setField(id){
-  if(!id) return;selected=id;$('field').value=id;draw();renderChart();
+  if(!fields.has(id)) return;
+  outlines.get(selected)?.setStyle(fieldStyle(false));
+  selected = id;
+  $('field').value = id;
+  outlines.get(id)?.setStyle(fieldStyle(true)).bringToFront();
+  renderChart();
 }
+
 function renderChart(){
   const rows=[...(fields.get(selected)?.records.values()??[])].filter(r=>r.season===$('season').value&&Number.isFinite(r.y)).sort((a,b)=>a.year-b.year);
   $('subtitle').textContent=selected ? 'Field ' + selected : '';
@@ -196,15 +184,8 @@ async function loadConfiguredData() {
 $('field').onchange=e=>setField(e.target.value);
 for(const id of ['season','dt','dp'])$(id).addEventListener('input',renderChart);
 $('reset').onclick=()=>{$('dt').value=0;$('dp').value=0;renderChart();};
-$('plus').onclick=()=>zoom(1.5);$('minus').onclick=()=>zoom(1/1.5);$('fit').onclick=fit;
-canvas.onwheel=e=>{e.preventDefault();zoom(Math.exp(Math.max(-1,Math.min(1,-e.deltaY*.002))),e.offsetX,e.offsetY);};
-canvas.onpointerdown=e=>{canvas.setPointerCapture(e.pointerId);drag={x:e.clientX,y:e.clientY,ox:e.clientX,oy:e.clientY};};
-canvas.onpointermove=e=>{
-  if(!drag||!view)return;
-  view.x-=(e.clientX-drag.x)/(view.s*view.aspect);view.y+=(e.clientY-drag.y)/view.s;
-  drag.x=e.clientX;drag.y=e.clientY;draw();
-};
-canvas.onpointerup=e=>{if(drag&&Math.hypot(e.clientX-drag.ox,e.clientY-drag.oy)<5){const rect=canvas.getBoundingClientRect();setField(draw([e.clientX-rect.left,e.clientY-rect.top]));}drag=null;};
-canvas.onpointercancel=()=>{drag=null;};
+$('plus').onclick = () => map.zoomIn();
+$('minus').onclick = () => map.zoomOut();
+$('fit').onclick = fit;
+new ResizeObserver(() => map.invalidateSize({pan: false})).observe($('map'));
 loadConfiguredData();
-new ResizeObserver(draw.bind(null,undefined)).observe(canvas);
